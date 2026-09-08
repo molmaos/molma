@@ -141,11 +141,34 @@ Feature work always branches off `dev` and PRs into `dev` — that's covered abo
 - Both `ci-go.yml` and `ci-web.yml` gate the dev->main PR the same way they gate every feature PR, so a release can't merge with a broken build or a stale OpenAPI/TS client.
 - Once the dev->main PR merges, `.github/workflows/release.yml` runs on every push to `main`. It reads `VERSION` and checks whether a `vX.Y.Z` tag for it already exists:
   - **If the tag already exists** (this merge didn't bump `VERSION`), the run is a clean no-op — no tag, no release, no image build. This is the common case for most `main` pushes and is expected to stay green.
-  - **If the tag doesn't exist** (this merge bumped `VERSION`), the workflow tags the merge commit `vX.Y.Z`, creates a GitHub Release for it with auto-generated notes, and then triggers the hosted cloud-image build+publish (`ci-cloud-image.yml`) for that same commit with publishing enabled.
+  - **If the tag doesn't exist** (this merge bumped `VERSION`), the workflow tags the merge commit `vX.Y.Z`, creates a GitHub Release for it, and then triggers the hosted cloud-image build+publish (`ci-cloud-image.yml`) for that same commit with publishing enabled. The Release notes are the **release PR's own body**, with the generated commit list appended under it; if that body is missing or too short to be a summary, the notes fall back to the generated list alone. So the summary you write in the release PR is what people read on the Release page — write it for someone deciding whether to upgrade, not for someone reading commits.
 - The cloud-image build is invoked directly as a reusable workflow (`workflow_call`), not via `ci-cloud-image.yml`'s `push: tags` trigger — a tag pushed with the default `GITHUB_TOKEN` (as `release.yml` does) does not fire another workflow's tag-push trigger, so relying on that event would silently tag a release and never build or publish it. `ci-cloud-image.yml`'s `push: tags: v*` trigger still exists as a manual escape hatch for a human pushing a tag by hand; see that workflow's header comment for the full reasoning.
 - A tagged release always ships an image stamped with that same version, runs the full seeded-boot gate, and attaches the image to the GitHub Release as `malmo-vX.Y.Z-amd64.raw.xz` + a `.sha256` sidecar. That Release asset is the only published artifact — the provider-snapshot upload was removed in #352, so a release no longer pushes to any hosting provider. `workflow_dispatch` on `ci-cloud-image.yml` remains available for manual build-only or build+publish runs outside the release flow (see the workflow's header comment).
 
 Contributors never push directly to `main`; the tag and the GitHub Release are created automatically by `release.yml`, not by hand.
+
+### Cutting a release, step by step
+
+The mechanics above say what happens automatically. This is the part a person does, and it is written down because `dev` and `main` drift apart between releases, so a plain `dev` -> `main` PR usually will not merge as-is.
+
+```bash
+# 1. Land the version bump on dev, like any other change.
+git checkout dev && git pull
+git checkout -b release/X.Y.Z
+echo "X.Y.Z" > VERSION
+# commit, PR into dev, merge.
+
+# 2. Cut the release branch and bring main back into it.
+git checkout dev && git pull
+git checkout -b release/X.Y.Z            # a fresh branch, after the bump landed
+git merge origin/main                    # expect conflicts; see below
+```
+
+`VERSION` conflicts on every release, because `main` still holds the previous number. **Always resolve it to the new `X.Y.Z`** — that file is the release trigger, so resolving it the other way ships nothing. Other conflicts are ordinary content: keep both sides unless they genuinely contradict.
+
+Then open the PR from `release/X.Y.Z` into `main`, let `ci-go.yml` and `ci-web.yml` gate it, and merge. `release.yml` does the rest.
+
+**Why the merge-back is needed at all:** anything that landed on `main` without going through `dev` is missing from `dev`, and a `dev` -> `main` PR then conflicts. That should be rare — **every PR targets `dev`, including docs-only and gap-ledger changes**. A PR opened against `main` is the mistake that causes this; if you find one, retarget it to `dev` rather than merging it. After each release, `sync-dev.yml` opens a `main` -> `dev` PR for whatever `main` gained (the merge commit, and anything that slipped in), so the next release starts from a clean `dev`. Merge that sync PR promptly; it is only doing work that grows if left.
 
 ## Definition of done — checklist
 

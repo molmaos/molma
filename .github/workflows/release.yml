@@ -1,6 +1,7 @@
 # Auto-tag `main` when a merge bumps the repo-root `VERSION` file, and — only
-# on that bump — cut the release: a GitHub Release with auto-generated notes,
-# then the hosted cloud-image build+publish.
+# on that bump — cut the release: a GitHub Release whose notes are the release
+# PR's own body plus the generated commit list, then the hosted cloud-image
+# build+publish.
 #
 # The VERSION bump IS the release trigger. `docs/dev/contributing.md` #
 # Release model: the maintainer bumps VERSION in the dev->main PR; everything
@@ -68,6 +69,13 @@ jobs:
   tag:
     name: Tag + GitHub Release (only if VERSION was bumped)
     runs-on: ubuntu-latest
+    # `contents: write` to push the tag and create the Release, and
+    # `pull-requests: read` to look up the release PR whose body becomes the
+    # Release notes. Set at job level: the workflow-level grant is
+    # `contents: write` only, which leaves every other scope at `none`.
+    permissions:
+      contents: write
+      pull-requests: read
     outputs:
       created: ${{ steps.decide.outputs.created }}
       tag: ${{ steps.decide.outputs.tag }}
@@ -133,11 +141,24 @@ jobs:
           echo "created=false" >> "$GITHUB_OUTPUT"
           echo "skip: tag $want already exists and VERSION was not bumped by this merge — nothing to release"
 
-      # Tag the merge commit and open a GitHub Release with auto-generated
-      # notes (commits since the previous tag). This uses the default
+      # Tag the merge commit and open a GitHub Release. This uses the default
       # GITHUB_TOKEN, which is exactly why ci-cloud-image.yml cannot rely on
       # its `push: tags` trigger to notice this tag — see the header comment
       # above and on ci-cloud-image.yml.
+      #
+      # The release PR's body becomes the Release notes, with the generated
+      # commit list appended under it (the API appends when both a body and
+      # generate_release_notes are sent). The commit list alone is a poor
+      # answer to "should I upgrade?" — it lists 45 subjects and buries the
+      # three that matter. The PR body is where the person cutting the release
+      # already wrote that summary, so use it rather than asking them to write
+      # it twice.
+      #
+      # It falls back to the generated notes alone when the body is missing or
+      # too short to be a summary. That matters: a release PR opened with a
+      # one-line body would otherwise produce notes strictly worse than the
+      # automatic ones. The threshold is deliberately low — it only screens out
+      # an empty or throwaway body, not a terse but real summary.
       - name: Create tag + GitHub Release
         if: steps.decide.outputs.created == 'true'
         env:
@@ -147,7 +168,21 @@ jobs:
           set -euo pipefail
           git tag "$TAG" "$GITHUB_SHA"
           git push origin "$TAG"
-          gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" --generate-notes
+
+          # The PR this merge came from, if any. A direct push to main has none,
+          # which is a normal case here, not an error.
+          body="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].body // ""' 2>/dev/null || echo "")"
+
+          if [ "${#body}" -ge 200 ]; then
+            printf '%s\n' "$body" > /tmp/release-notes.md
+            echo "notes: using the release PR body (${#body} chars) with the generated list appended"
+            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" \
+              --notes-file /tmp/release-notes.md --generate-notes
+          else
+            echo "::warning::release PR body is missing or too short (${#body} chars) — falling back to generated notes only. Write a summary in the release PR body so the Release page says what changed."
+            gh release create "$TAG" --title "$TAG" --target "$GITHUB_SHA" --generate-notes
+          fi
 
       - name: Step summary
         env:

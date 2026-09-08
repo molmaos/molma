@@ -1,0 +1,82 @@
+# Carry `main` back into `dev` after it moves.
+#
+# WHY THIS EXISTS: `dev` is where every change lands and `main` only moves via a
+# release PR — in theory. In practice a PR occasionally gets opened against
+# `main` directly (four of them did between 0.8.0 and 0.11.0, all docs), and a
+# release merge itself adds a commit `dev` never sees. Either way `dev` falls
+# behind, and the NEXT release's dev->main PR conflicts. That conflict was
+# re-resolved by hand at every release from 0.8.0 to 0.11.0, always the same
+# way, which is the shape of a job rather than a habit.
+#
+# It opens a PR instead of pushing. A `main` -> `dev` merge can conflict (the
+# 0.11.0 one did, on VERSION and a docs file), and a bot resolving a conflict
+# unattended is how the wrong side of a VERSION bump gets committed. A PR is
+# also reviewable and can simply be closed when the sync is genuinely unwanted.
+#
+# It is deliberately NOT part of release.yml: `main` can move without a release
+# (a docs PR merged there), and that is exactly the case that causes the drift.
+name: Sync dev
+
+on:
+  push:
+    branches: [main]
+  # So a sync can be re-opened after someone closes one, without waiting for
+  # the next push to main.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# A second run while one is mid-PR would just race to open the same PR.
+concurrency:
+  group: sync-dev
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Open a main -> dev PR if dev is behind
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Open or update the sync PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Nothing on main that dev lacks: the common case right after a sync
+          # merged, and a clean no-op rather than an empty PR.
+          behind="$(git rev-list --count origin/dev..origin/main)"
+          if [ "$behind" -eq 0 ]; then
+            echo "dev is up to date with main — nothing to sync"
+            echo "### dev is already up to date with main" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          existing="$(gh pr list --base dev --head main --state open --json number --jq '.[0].number // ""')"
+          if [ -n "$existing" ]; then
+            echo "sync PR #$existing is already open; it tracks main automatically"
+            echo "### Sync PR [#${existing}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${existing}) already open — ${behind} commit(s) to carry back" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # `--no-maintainer-edit` because the head branch is a repo branch, not
+          # a fork; gh otherwise tries to set a flag it cannot set here.
+          {
+            echo '`main` has commits that `dev` does not. Merging this keeps the next release'"'"'s `dev` -> `main` PR from conflicting.'
+            echo ''
+            echo 'Opened automatically by `.github/workflows/sync-dev.yml`.'
+            echo ''
+            echo '**If this conflicts on `VERSION`, keep `dev`'"'"'s value.** `dev` holds the version being worked towards; `main` holds the one already released. Resolving it the other way would walk the version backwards on `dev`.'
+            echo ''
+            echo 'Other conflicts are ordinary content — keep both sides unless they genuinely contradict.'
+          } > /tmp/sync-body.md
+
+          url="$(gh pr create --base dev --head main --no-maintainer-edit \
+            --title "Sync main into dev" --body-file /tmp/sync-body.md)"
+          echo "opened $url"
+          echo "### Opened [sync PR](${url}) — ${behind} commit(s) from main to carry back into dev" >> "$GITHUB_STEP_SUMMARY"
