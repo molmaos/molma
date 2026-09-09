@@ -21,6 +21,34 @@ Keep entries skimmable. The detailed rationale lives in the affected doc; this f
 
 ---
 
+## 2026-09-09 — SSH ships on both profiles; the mandatory auth factor is set by the profile (#463)
+
+**Previously:** three separate positions, all written for a box behind a LAN. `AUTH.md` # Device access made SSH per-account opt-in with the **malmo password** as the credential, one password shared with the dashboard and SMB. `BUILD.md` # SSH kept sshd **running from boot** with an empty `AllowUsers`, so the port was always open and always rejecting. `ENVIRONMENT.md` # Access & files turned SSH **off entirely on hosted**, because there is no LAN to scope port 22 to and no mesh. None of it was ever built — there is no SSH code anywhere in the tree.
+
+**Now:** SSH ships on both profiles, per account, off by default, with three things changed.
+
+1. **The mandatory auth factor is set by the profile.** Hosted requires a **public key**. Appliance requires the **password**. Each profile offers the other factor as an optional **second** lock, never as an alternative door: choosing it renders `AuthenticationMethods publickey,password`, so both are demanded and neither alone authenticates.
+2. **Port 22 is open only while at least one account has SSH enabled.** sshd is started when the first account opts in and stopped when the last opts out. This replaces daemon-on-but-no-account.
+3. **Hosted SSH is no longer off.** The reasoning that put it there still holds and is exactly why hosted's mandatory factor is the key.
+
+**Why:**
+
+- **The one-password decision was a decision about a LAN, not about passwords.** It works on the appliance because nftables blocks port 22 from the public internet, so a household-strength password is only ever offered to devices already in the house or already paired on the mesh. A hosted box has neither. Carrying the rule across would quietly turn that password into an internet-facing credential.
+- **A public port 22 routes around the control that already exists for this attack.** `AUTH.md` # Rate limiting gives the login path per-username backoff, a 15-minute lockout, a per-IP bucket, and a careful rule for which hop of `X-Forwarded-For` to trust. sshd knows none of it. Password auth on a public port is a second, unguarded door to the same credential the first door is carefully guarding.
+- **The blast radius is other people.** Admins are in `sudo` (2026-05-15), so a guessed admin password is root, and `/home` holds every household member's files. `THREAT_MODEL.md` already refuses privileged containers to admins on exactly this reasoning — a multi-user box means the installer is not the only one who bears the consequence. Refusing an internet-facing guessable credential is the same line.
+- **`THREAT_MODEL.md`'s accepted residual was scoped to a LAN.** "A compromised admin SSH session is root" was accepted when the port was unreachable from the internet. Opening it turns that sentence into a much larger claim, so the risk has to be removed rather than re-accepted.
+- **Key-only is affordable here, because losing a key is not a lockout.** The dashboard is reached through the portal on hosted and through the login screen on the appliance, never through SSH. A user who loses their key signs in normally and pastes a new one. That self-service recovery is what makes the strict option viable for non-technical owners. It also costs the intended audience nothing: someone who cannot produce a public key has no use for a shell.
+- **The daemon is the port control, because the box is its own perimeter.** Measured on the production provider rather than assumed: the cloud repo's Hetzner `ServerCreateOpts` sets no `Firewalls` field and that provider package contains no firewall code, so a hosted box has every port open today. Stopping sshd therefore genuinely closes 22, with no in-guest ruleset — which matters, because a general malmo-owned `nftables` ruleset was deferred on purpose (2026-06-19). The appliance keeps its LAN-scoping drop-in on top; the two are complementary.
+- **`BUILD.md`'s two arguments for daemon-on did not survive.** "No visible service restart" is not a real difference, since a `systemctl` call through host-agent is no more visible to the user than a config edit. "Rejects at name resolution before evaluating credentials" defends a weaker posture rather than arguing against a stronger one. A closed port beats a port that answers and refuses.
+
+**Not decided here, and deliberately separate:** operator/fleet debug access. A per-user toggle a tenant can switch off is not fleet access, and the answer is an SSH certificate authority the hosted image trusts, which lives in the control plane. It decides whether the image ships a `TrustedUserCAKeys` line.
+
+**Noticed while measuring, not fixed here:** `ENVIRONMENT.md` # Network filtering states that provisioning every tenant behind a provider security group admitting only 443 and 80 is an explicit operator requirement. The Hetzner provider attaches no firewall, so that requirement is not implemented. Real drift, tracked separately from this work.
+
+**Affected docs:** `AUTH.md` # Device access (rewritten for the two profiles and the AND semantics), `BUILD.md` # SSH (daemon lifecycle; the nftables scoping stays), `ENVIRONMENT.md` # Access & files (the "SSH: off in v1" bullet is replaced), `BRAIN_HOST_PROTOCOL.md` (the new `/v1/ssh/*` operations), `SETTINGS.md` # panel inventory (Device access row). Progress: `ssh-per-account-access.md`.
+
+---
+
 ## 2026-09-04 — Catalog: browse and install are two fetches, and the index digest is gone (#434)
 
 **Previously:** the box pulled one bulk snapshot, `GET /catalog/sync`, that carried every published app's verbatim `manifest.yml`, `compose.yml` and resolved images map, whether or not the box would ever install them. The snapshot was stamped with `index_sha256`, a SHA-256 over the app index that the box **recomputed** by re-marshalling what it had parsed, and refused the whole snapshot on a mismatch. Environment visibility was filtered on the box (`visibleIn`).

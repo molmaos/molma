@@ -214,6 +214,46 @@ type SetRoleRequest struct {
 	Role string `json:"role"`
 }
 
+// SetSSHAccessRequest is POST /v1/ssh/set-access — one account's *full* desired
+// SSH state, not a delta (BRAIN_HOST_PROTOCOL.md # SSH access). AuthorizedKeys
+// replaces that account's authorized_keys file outright, so a retry after a
+// partial failure converges instead of compounding. Disabling is Enabled=false;
+// host-agent then drops the account's Match block and its keys.
+//
+// RequirePassword adds the malmo password as a second required method for this
+// account, rendering "AuthenticationMethods publickey,password". It never
+// substitutes for the mandatory factor. Which factor is mandatory is the brain's
+// call and depends on the environment profile — a key on hosted, the password on
+// the appliance (AUTH.md # Device access) — and the brain refuses a hosted enable
+// with no key before calling here. host-agent does not know the profile, the same
+// division of labour as set-timezone, where the brain validates the zone.
+type SetSSHAccessRequest struct {
+	User            string   `json:"user"`
+	Enabled         bool     `json:"enabled"`
+	AuthorizedKeys  []string `json:"authorized_keys"`
+	RequirePassword bool     `json:"require_password"`
+}
+
+// SSHState is GET /v1/ssh/state — actual host state for the reconciler, read on
+// the 60-second heartbeat. DaemonRunning is the answer to "is :22 open", which on
+// hosted is the only control over that port (ENVIRONMENT.md # Access & files).
+// Users lists only accounts that are currently enabled.
+//
+// Keys are reported as a count, never as material: the brain already holds the
+// desired keys, and echoing them back would put them in a second place for no
+// reconcile benefit.
+type SSHState struct {
+	DaemonRunning bool           `json:"daemon_running"`
+	Users         []SSHUserState `json:"users"`
+}
+
+// SSHUserState is one enabled account in SSHState.
+type SSHUserState struct {
+	Username        string `json:"username"`
+	KeyCount        int    `json:"key_count"`
+	RequirePassword bool   `json:"require_password"`
+}
+
 // SetTimezoneRequest is POST /v1/system/set-timezone. host-agent applies the
 // system timezone via `timedatectl set-timezone <zone>` (TIME.md # System TZ);
 // the brain drives it from the first-run wizard's time-zone step and the later

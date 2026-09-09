@@ -196,6 +196,7 @@ func (s *Server) registerAll(api huma.API) {
 	s.registerAuth(api)
 	s.registerUsers(api)
 	s.registerMeRoutes(api)
+	s.registerSSHRoutes(api)
 	s.registerHealth(api)
 	s.registerNotifications(api)
 	s.registerMail(api)

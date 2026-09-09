@@ -18,6 +18,7 @@ import (
 	"github.com/malmoos/malmo/internal/hostagent/rampressure"
 	"github.com/malmoos/malmo/internal/hostagent/rebootrequired"
 	"github.com/malmoos/malmo/internal/hostagent/servicehealth"
+	"github.com/malmoos/malmo/internal/hostagent/sshaccess"
 	"github.com/malmoos/malmo/internal/hostagent/timezone"
 	"github.com/malmoos/malmo/internal/hostagent/usermgr"
 	"github.com/malmoos/malmo/internal/protocol"
@@ -58,6 +59,11 @@ func buildAgent() (*hostagent.Agent, func()) {
 	)
 	a.UserMgr = &usermgr.LinuxUserManager{}
 	a.Timezone = timezone.New()
+	// SSH access is wired in both build profiles: the per-account opt-in exists
+	// on the appliance and on hosted alike, and only the *mandatory* factor
+	// differs — a key on hosted, the password here (AUTH.md # Device access).
+	// That choice is the brain's, so the same manager serves both.
+	a.SSH = &sshaccess.Manager{}
 	a.Health = healthsource.New(healthsource.DefaultPath)
 	a.Services = servicehealth.New(servicehealth.ApplianceUnits)
 	a.Time = clockhealth.New()

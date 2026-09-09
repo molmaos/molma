@@ -78,6 +78,28 @@ func (c *Client) SetTimezone(ctx context.Context, zone string) error {
 	return c.do(ctx, "POST", "/v1/system/set-timezone", protocol.SetTimezoneRequest{Zone: zone}, nil)
 }
 
+// SetSSHAccess applies one account's full desired SSH state on the host: the
+// authorized keys it may use, whether the malmo password is required as a second
+// method, and whether the account is enabled at all. host-agent re-renders the
+// sshd drop-in from the enabled set and starts or stops the daemon to match, so
+// this is also what opens and closes :22 (BRAIN_HOST_PROTOCOL.md # SSH access).
+//
+// The brain decides which factor is mandatory for the profile and validates the
+// keys before calling; host-agent applies what it is given.
+func (c *Client) SetSSHAccess(ctx context.Context, req protocol.SetSSHAccessRequest) error {
+	return c.do(ctx, "POST", "/v1/ssh/set-access", req, nil)
+}
+
+// SSHState reads actual SSH state from the host for the reconciler: whether the
+// daemon is running, and which accounts the rendered config currently enables.
+func (c *Client) SSHState(ctx context.Context) (protocol.SSHState, error) {
+	var out protocol.SSHState
+	if err := c.do(ctx, "GET", "/v1/ssh/state", nil, &out); err != nil {
+		return protocol.SSHState{}, err
+	}
+	return out, nil
+}
+
 // DeleteUser removes the user. Idempotent: unknown user returns nil.
 func (c *Client) DeleteUser(ctx context.Context, user string) error {
 	return c.do(ctx, "POST", "/v1/auth/delete-user", protocol.DeleteUserRequest{User: user}, nil)

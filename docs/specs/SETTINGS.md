@@ -30,7 +30,7 @@ Every panel below is already implied by an existing spec. The **owning doc** col
 | Bucket | Panel | What it holds | Owning doc | Role |
 |---|---|---|---|---|
 | **My account** | Profile | Display name, change password | `AUTH.md`, `USERS_AND_GROUPS.md` | any user |
-| | Device access | Per-account SSH + SMB opt-in toggles | `AUTH.md` # Device access | any user |
+| | Device access | Per-account SSH + SMB opt-in toggles, and the account's SSH public keys (upload a file or paste the text). The mandatory auth factor is the profile's — a key on hosted, the password on the appliance | `AUTH.md` # Device access | any user |
 | | Sessions | "Sign out everywhere" | `AUTH.md` # Sessions | any user |
 | | Notifications | Per-category mute toggles | `NOTIFICATIONS.md` # Configuration | any user (role-filtering the list is a `NEXT.md` open item) |
 | **Box settings** | Users | Create / reset password / role change; per-user pending update facts | `USERS_AND_GROUPS.md`, `UPDATES.md` # Admin visibility | admin |

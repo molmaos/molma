@@ -220,24 +220,34 @@ The LUKS recovery passphrase (shown at install, see `STORAGE.md`) recovers **dis
 
 ## Device access (SSH + SMB)
 
-**One password for everything.** Dashboard, SSH, and SMB all authenticate against the same Linux account password — the one the user set at account creation, stored in PAM (`/etc/shadow`). Setting up SSH or mounting an SMB share uses the password the user already knows.
+**One password for everything.** Dashboard, SSH, and SMB all authenticate against the same Linux account password — the one the user set at account creation, stored in PAM (`/etc/shadow`). Setting up SSH or mounting an SMB share uses the password the user already knows. **On hosted, SSH is the exception**: the password is not enough there on its own, and a public key is required — see the profile table below.
 
 **What's per-protocol is the *access*, not the *credential*.** The password is set when the account is created; what changes when the user opts in is which services accept that password for that account.
 
-**Default posture: services on, accounts off.** sshd and Samba are enabled at boot, but no Linux account can log in to either until explicitly allowed:
+**The mandatory factor is set by the profile.** SSH is the one place the one-password rule does not travel, and `DECISIONS.md` 2026-09-09 records why: that rule was a decision about a LAN, and hosted has none.
 
-- `sshd_config.d/malmo-allowed.conf` carries an `AllowUsers` allowlist. Empty at install — sshd rejects every account by default.
+| Profile | Mandatory | Optional second factor | Refused |
+|---|---|---|---|
+| Appliance | The malmo password | A public key | — |
+| Hosted | A public key | The malmo password | Enabling with no key |
+
+The optional factor is a **second lock, never a second door**. Choosing it renders `AuthenticationMethods publickey,password` for that account, so sshd demands both and neither alone authenticates. Offering the other factor as an *alternative* would set the account's security by its weaker branch, which on hosted would discard the whole point of requiring a key.
+
+**Losing a key is not a lockout.** The dashboard is reached through the portal on hosted and through the login screen on the appliance, never through SSH. A user who loses their key signs in as usual and pastes a new one. That is what makes the strict hosted posture affordable for a non-technical owner.
+
+**Default posture: nothing is listening.** Samba is enabled at boot with an empty `valid users`. **sshd is not running at all** until an account opts in:
+
+- `sshd_config.d/malmo-allowed.conf` is rendered from the enabled set — a global `AllowUsers` plus one `Match User` block per account carrying that account's `AuthenticationMethods`. Empty at install.
+- sshd is **started when the first account enables SSH and stopped when the last one disables it**, so a box nobody uses SSH on has no open port rather than an open port that refuses (`BUILD.md` # SSH, and `DECISIONS.md` 2026-09-09 for why this replaces daemon-on-but-no-account).
 - `smb.conf` carries a `valid users` directive per share. Empty at install — Samba rejects every account.
-
-The password exists in PAM and is valid; the services just don't accept any user yet.
 
 **Flow (per protocol):**
 
 1. Settings → My account → Device access → toggle "Enable SSH" or "Enable file shares (SMB)."
 2. Confirm dashboard password (re-auth gate, prevents stolen-session abuse).
-3. Optional: paste an SSH public key (preferred for SSH; SMB doesn't use keys).
-4. Brain calls host-agent → adds the user to the relevant allowlist (`sshd AllowUsers` and/or Samba `valid users`) → reloads the service. Optionally writes `~/.ssh/authorized_keys`.
-5. User can now connect using their existing malmo password.
+3. Add a public key. Required on hosted, optional on the appliance. The user can **upload a `.pub` file or paste the text**; both reach the same validation. Several keys per account is normal — a laptop and a desktop. A pasted **private** key is refused in plain English and never stored.
+4. Optionally turn on the second factor, described to the user as an extra lock rather than another way in.
+5. Brain calls host-agent → renders the sshd drop-in from the enabled set, writes the account's keys to a **root-owned file outside the user's home** (`/etc/ssh/malmo-authorized-keys/<user>`), validates with `sshd -t`, reloads, and starts or stops the daemon as the enabled set requires. The per-account `Match` block points sshd at that file **and** at the user's own `~/.ssh/authorized_keys`, so keys a user added from their shell keep working and malmo never touches that file. Keeping malmo's keys out of the home directory is a security requirement, not tidiness: host-agent runs as root and `~/.ssh` is a path the account controls, so writing there as root can be redirected by a symlink the user swaps in. SMB is the `valid users` allowlist plus a Samba reload, unchanged.
 
 **Why one password instead of two:**
 
@@ -247,7 +257,9 @@ The password exists in PAM and is valid; the services just don't accept any user
 
 **Samba password backend:** Samba historically wants its own password DB (`tdbsam`), which doesn't share storage with `/etc/shadow`. We use Samba's PAM passdb backend (`passdb backend = tdbsam` with `unix password sync = yes` + `pam password change = yes`) so a password change via `passwd` automatically updates Samba. host-agent does the change atomically (`passwd` + Samba sync as one operation) so drift doesn't occur in practice.
 
-**Network scope:** SSH on :22 and SMB on :445 are firewalled to RFC1918 + the mesh interface — see `BUILD.md` # SSH. Both are structurally blocked from the public internet; both work from a paired mesh device. Pair the device to access the box remotely.
+**Network scope (appliance):** SSH on :22 and SMB on :445 are firewalled to RFC1918 + the mesh interface — see `BUILD.md` # SSH. Both are structurally blocked from the public internet; both work from a paired mesh device. Pair the device to access the box remotely. That scoping is what lets the appliance keep the password as its mandatory factor.
+
+**Network scope (hosted):** there is no LAN and no mesh, so there is nothing to scope to, and no SMB at all (`ENVIRONMENT.md` # Access & files). The box is its own perimeter — it runs no malmo firewall and its provider attaches none — so the only control over :22 is whether sshd is running, which is exactly why the daemon follows the enabled set. Reachability is therefore binary and the credential has to carry the weight, which is the key requirement.
 
 ## Brain ↔ host-agent in the auth path
 
@@ -280,7 +292,8 @@ The brain's session middleware reaches host-agent for *credential verification* 
 - **Login UX: user-list style** with first name + letter glyph. Settings toggle to switch to a blank-form login for privacy-conscious users.
 - **Roles enforced server-side in the brain.** UI hiding is defense in depth.
 - **Tier-2 admin surface lives in the dashboard at `/settings/<service>/*`.** Same origin, same session, no forward-auth.
-- **SSH and SMB are off-by-account-by-default.** Services run; per-user allowlists are empty until the user opts in via Settings.
+- **SSH and SMB are off-by-account-by-default.** Per-user allowlists are empty until the user opts in via Settings. Samba runs from boot; **sshd does not** — it follows the enabled set, so :22 is closed on a box where nobody uses SSH.
+- **The mandatory SSH factor is the profile's.** A public key on hosted, the malmo password on the appliance. The other factor is available as a required *second* method (`AuthenticationMethods publickey,password`), never as an alternative. Hosted refuses to enable an account that has no key. See `DECISIONS.md` 2026-09-09.
 - **Admin recovery code: opt-in toggle, default on.** Shown once, hashed (stored in brain SQLite), single-use, no physical-access reset path. Validating the code triggers a password change through host-agent → PAM.
 - **No SSO into Tier-3 apps.** Locked already in `SPEC.md`; reiterated here.
 - **Cross-origin re-auth on toggle flip is accepted.** No session handoff in v1.

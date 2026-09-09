@@ -1,5 +1,22 @@
 components:
   schemas:
+    Add-my-ssh-keyRequest:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/Add-my-ssh-keyRequest.json
+          format: uri
+          readOnly: true
+          type: string
+        label:
+          type: string
+        public_key:
+          type: string
+      required:
+        - public_key
+      type: object
     AppConfigDTO:
       additionalProperties: false
       properties:
@@ -1639,6 +1656,55 @@ components:
       required:
         - password
       type: object
+    SSHAccessDTO:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/SSHAccessDTO.json
+          format: uri
+          readOnly: true
+          type: string
+        enabled:
+          type: boolean
+        key_required:
+          type: boolean
+        keys:
+          items:
+            $ref: "#/components/schemas/SSHKeyDTO"
+          type:
+            - array
+            - "null"
+        require_password:
+          type: boolean
+      required:
+        - enabled
+        - require_password
+        - key_required
+        - keys
+      type: object
+    SSHKeyDTO:
+      additionalProperties: false
+      properties:
+        added_at:
+          format: int64
+          type: integer
+        fingerprint:
+          type: string
+        id:
+          type: string
+        label:
+          type: string
+        public_key:
+          type: string
+      required:
+        - id
+        - label
+        - public_key
+        - fingerprint
+        - added_at
+      type: object
     Set-app-exposureRequest:
       additionalProperties: false
       properties:
@@ -1671,6 +1737,23 @@ components:
           type: string
       required:
         - provider_id
+      type: object
+    Set-my-sshRequest:
+      additionalProperties: false
+      properties:
+        $schema:
+          description: A URL to the JSON Schema for this object.
+          examples:
+            - https://example.com/schemas/Set-my-sshRequest.json
+          format: uri
+          readOnly: true
+          type: string
+        enabled:
+          type: boolean
+        require_password:
+          type: boolean
+      required:
+        - enabled
       type: object
     Set-telemetryRequest:
       additionalProperties: false
@@ -2907,6 +2990,87 @@ paths:
                 $ref: "#/components/schemas/ErrorModel"
           description: Error
       summary: Self-service password change (any authenticated user)
+  /api/v1/me/ssh:
+    get:
+      operationId: get-my-ssh
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHAccessDTO"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Read my SSH access settings and keys (auth required)
+    put:
+      operationId: set-my-ssh
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Set-my-sshRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHAccessDTO"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Turn my SSH access on or off (auth required, elevation-class)
+  /api/v1/me/ssh/keys:
+    post:
+      operationId: add-my-ssh-key
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Add-my-ssh-keyRequest"
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SSHAccessDTO"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Add one of my SSH public keys (auth required, elevation-class)
+  /api/v1/me/ssh/keys/{id}:
+    delete:
+      operationId: delete-my-ssh-key
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Remove one of my SSH public keys (auth required, elevation-class)
   /api/v1/notifications:
     get:
       operationId: list-notifications

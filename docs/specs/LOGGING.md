@@ -171,6 +171,9 @@ The following `action` strings are the pinned v1 set. Defined as exported consts
 | `user.delete` | Admin deleted a user via `DELETE /api/v1/users/:id`. |
 | `user.password.reset` | Admin reset another user's password via `POST /api/v1/users/:id/password`. |
 | `user.password.change` | User changed their own password via `POST /api/v1/me/password` (success and failure both audited). |
+| `ssh.access.set` | User turned SSH on or off for their own account via `PUT /api/v1/me/ssh` (success and failure both audited). Metadata carries `enabled` and `require_password`. |
+| `ssh.key.add` | User added an SSH public key via `POST /api/v1/me/ssh/keys`. Metadata carries the fingerprint, never the key. |
+| `ssh.key.delete` | User removed one of their SSH public keys via `DELETE /api/v1/me/ssh/keys/{id}`. |
 | `health.issue.raised` | A typed health issue transitioned from cleared to active. One record per issue, system actor, `target_kind: health_issue`. |
 | `health.issue.cleared` | A typed health issue transitioned from active to cleared. One record per issue, system actor, `target_kind: health_issue`. |
 

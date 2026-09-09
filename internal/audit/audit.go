@@ -69,6 +69,14 @@ const (
 	// elevation-class and audits success and failure.
 	ActionAppExposureSet = "app.exposure.set"
 
+	// Device access (AUTH.md # Device access). Enabling SSH on an account changes
+	// who can get a shell on the box, so it is elevation-class and audits failure
+	// as well as success — the Activity view has to be able to answer "did someone
+	// try to open a shell path into this box?" the way it answers it for logins.
+	ActionSSHAccessSet = "ssh.access.set"
+	ActionSSHKeyAdd    = "ssh.key.add"
+	ActionSSHKeyDelete = "ssh.key.delete"
+
 	// Control-plane update start (UPDATES.md # 3). Starting an update replaces
 	// the brain and UI containers on the box, so it is elevation-class: it
 	// audits the start and every refusal. It does not audit the outcome — the

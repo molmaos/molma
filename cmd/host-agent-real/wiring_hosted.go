@@ -13,6 +13,7 @@ import (
 	"github.com/malmoos/malmo/internal/hostagent/rampressure"
 	"github.com/malmoos/malmo/internal/hostagent/rebootrequired"
 	"github.com/malmoos/malmo/internal/hostagent/servicehealth"
+	"github.com/malmoos/malmo/internal/hostagent/sshaccess"
 	"github.com/malmoos/malmo/internal/hostagent/timezone"
 	"github.com/malmoos/malmo/internal/hostagent/usermgr"
 	"github.com/malmoos/malmo/internal/protocol"
@@ -53,6 +54,11 @@ func buildAgent() (*hostagent.Agent, func()) {
 	)
 	a.UserMgr = &usermgr.LinuxUserManager{}
 	a.Timezone = timezone.New()
+	// Same manager as the appliance: which factor is mandatory is the brain's
+	// decision, not host-agent's. Here it also carries more weight than on the
+	// appliance — with no LAN to scope :22 to and no malmo firewall, the daemon's
+	// run state is the only control over the port (ENVIRONMENT.md # Access & files).
+	a.SSH = &sshaccess.Manager{}
 	a.Health = healthsource.New(healthsource.DefaultPath)
 	a.Services = servicehealth.New(servicehealth.HostedUnits)
 	a.Time = clockhealth.New()

@@ -67,13 +67,16 @@ Minimum to be a malmo box:
 
 ### SSH
 
-`openssh-server` is **installed and enabled at boot** — sshd listens on :22 from first boot. However, **no account can authenticate by default**: `sshd_config.d/malmo-allowed.conf` carries an empty `AllowUsers` directive, so sshd rejects every account regardless of whether the password is valid. Per-account opt-in (Settings → My account → Enable SSH) adds the user to `AllowUsers` and reloads sshd. The user's malmo password — the same one they use for the dashboard — is what authenticates them; SSH does not have its own password (`AUTH.md` # Device access).
+`openssh-server` is **installed but not enabled at boot** — sshd does not run and :22 is closed on a fresh box. It is started when the first account enables SSH from Settings and stopped when the last one disables it, so a box nobody uses SSH on presents no port at all (`AUTH.md` # Device access; `DECISIONS.md` 2026-09-09).
 
-Why daemon-on-but-no-account instead of daemon-off-until-toggle:
+Why daemon-follows-the-enabled-set instead of daemon-on-with-an-empty-allowlist:
 
-- The "turn on SSH" UX is a single toggle in Settings, with no host-level service restart visible to the user. The brain calls host-agent to edit the allowlist; the daemon was already running.
-- An attacker on the LAN sees an open :22, but no account is in the allowlist — sshd rejects connections at auth-name resolution, before evaluating credentials. Blast radius is bounded by `AUTH.md`'s opt-in mechanics.
-- `PermitRootLogin no`, `PasswordAuthentication yes` (sshd accepts the user's malmo password; a public key can also be added to `~/.ssh/authorized_keys` for key-based login).
+- **A closed port beats a port that answers and refuses.** The old posture left :22 open for the life of every box so that sshd could reject at auth-name resolution. That defends a weaker position rather than arguing against a stronger one, and it costs a permanently visible service on a machine most owners will never SSH into.
+- **On hosted the daemon *is* the port control.** That profile runs no malmo firewall and its provider attaches none, so nothing else can close :22 (`ENVIRONMENT.md` # Access & files).
+- **The toggle is no less simple.** The user still flips one switch in Settings; the brain calls host-agent, which renders the config and starts or stops the unit. A `systemctl` call is no more visible to the user than a config edit was.
+- `PermitRootLogin no`. `PasswordAuthentication yes` globally, because it is a prerequisite for the password half of any account's `AuthenticationMethods` — **it does not mean a password alone gets in.** Per-account method policy is a `Match User` block, so an account whose mandatory factor is the key is `publickey`, and one that added the optional second lock is `publickey,password`.
+
+The drop-in at `sshd_config.d/malmo-allowed.conf` is **rendered whole from the enabled set**, never line-edited: a global `AllowUsers` plus one `Match User` block per enabled account. Each block names an `AuthorizedKeysFile` pair — malmo's root-owned `/etc/ssh/malmo-authorized-keys/<user>` first, the user's own `.ssh/authorized_keys` second (`AUTH.md` # Device access explains why malmo's keys stay out of the home directory). host-agent validates the candidate on its own **before** installing it and the combined config **after**, restoring the previous file if the combined check fails, so a render sshd rejects never survives to break the next start.
 
 **Network scope: LAN + mesh only, structurally.** An nftables rule on :22 default-denies and allows only:
 
@@ -82,7 +85,7 @@ Why daemon-on-but-no-account instead of daemon-off-until-toggle:
 
 SSH from the public internet is **structurally blocked**, not relying on per-account opt-in alone. A port scan from outside sees a closed port, not a refused-auth banner. The path to "SSH to my box from outside" is "pair the device on the mesh" — same trust model the user already learns for the dashboard. Interface-agnostic by design (nftables on source IP, not `ListenAddress` on a NIC name), so changing NICs / adding Wi-Fi doesn't break it.
 
-Implemented as a drop-in at `/etc/nftables.d/malmo-ssh.conf`, owned by the `.deb`. Mesh interface name is templated at host-agent startup based on which mesh client is installed.
+Implemented as a drop-in at `/etc/nftables.d/malmo-ssh.conf`, owned by the `.deb`. Mesh interface name is templated at host-agent startup based on which mesh client is installed. This scoping is **appliance-only and stays**: it is complementary to the daemon lifecycle above, not replaced by it. The daemon decides whether :22 answers at all; nftables decides who may reach it when it does. Hosted has neither a LAN nor a mesh to scope to, so there the daemon is the only control.
 
 ### What we deliberately do not preinstall
 

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -44,6 +45,18 @@ var AgentVersion = version.Version
 // (FakeVerifier, PAMVerifier) export concrete types only.
 type PasswordVerifier interface {
 	Verify(user, password string) (bool, error)
+}
+
+// SSHAccessManager is a consumer-side interface for the per-account SSH opt-in
+// (BRAIN_HOST_PROTOCOL.md # SSH access). Lives here because the /v1/ssh/*
+// handlers are the consumers; sshaccess.Manager is the concrete Linux provider.
+//
+// SetAccess takes one account's full desired state and is expected to be
+// idempotent: the same call twice leaves the same config and the same daemon
+// state. State reports what the host actually has, for the brain's reconciler.
+type SSHAccessManager interface {
+	SetAccess(req protocol.SetSSHAccessRequest) error
+	State() (protocol.SSHState, error)
 }
 
 // Publisher is a consumer-side interface for writing/removing Avahi service
@@ -263,6 +276,10 @@ type Agent struct {
 	// the map entirely — /etc/shadow is the source of truth there.
 	passwords map[string][]byte
 	roles     map[string]string
+	// sshAccess is the in-memory stand-in for the sshd drop-in, used by the
+	// /v1/ssh/* handlers when SSH is nil (the fake binary). Keyed by username and
+	// holding only enabled accounts, so len() answers "is the daemon running".
+	sshAccess map[string]protocol.SSHUserState
 	// statePath, when non-empty, backs passwords+roles with a JSON file so the
 	// fake binary's accounts survive a restart (a dev stand-in for /etc/shadow,
 	// which the real agent persists for free). Empty by default — tests and the
@@ -342,6 +359,15 @@ type Agent struct {
 	// this nil (fake path); cmd/host-agent-real wires usermgr.LinuxUserManager
 	// so /etc/passwd + /etc/shadow + /etc/group become the source of truth.
 	UserMgr UserManager
+
+	// SSH, when non-nil, backs POST /v1/ssh/set-access and GET /v1/ssh/state
+	// (real sshd drop-in + systemctl). Wired by cmd/host-agent-real in both build
+	// profiles — SSH is per-account on the appliance and on hosted alike, only
+	// the mandatory auth factor differs, and that is the brain's decision
+	// (AUTH.md # Device access). When nil (cmd/host-agent fake, dev loop), the
+	// handlers keep the same state in the in-memory sshAccess map so the whole
+	// flow is exercisable under `make dev` without touching the developer's sshd.
+	SSH SSHAccessManager
 
 	// Timezone, when non-nil, backs POST /v1/system/set-timezone (real
 	// `timedatectl set-timezone`). Wired by cmd/host-agent-real in both build
@@ -428,6 +454,8 @@ func (a *Agent) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/set-role", a.setRole)
 	mux.HandleFunc("POST /v1/auth/delete-user", a.deleteUser)
 	mux.HandleFunc("POST /v1/system/set-timezone", a.setTimezone)
+	mux.HandleFunc("POST /v1/ssh/set-access", a.setSSHAccess)
+	mux.HandleFunc("GET /v1/ssh/state", a.sshState)
 	mux.HandleFunc("GET /v1/health/system", a.systemHealth)
 	mux.HandleFunc("GET /v1/journal/follow", a.journalFollow)
 	mux.HandleFunc("POST /v1/jobs/system-update", a.startSystemUpdate)
@@ -915,6 +943,95 @@ func (a *Agent) setTimezone(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("set-timezone", "zone", req.Zone)
 	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// setSSHAccess applies one account's full desired SSH state. The request is
+// deliberately not a delta (BRAIN_HOST_PROTOCOL.md # SSH access): AuthorizedKeys
+// replaces the account's key set outright, so a retry after a partial failure
+// converges rather than compounding.
+//
+// The only validation here is structural — a username is required, and an
+// enabled account with no keys and no password is refused because it could
+// never authenticate. Everything policy-shaped stays in the brain: which factor
+// is mandatory depends on the environment profile, and host-agent does not know
+// the profile. Same division as setTimezone, where the brain validates the zone.
+//
+// When SSH is nil (the fake binary) the state is kept in memory and no sshd is
+// touched, so `make dev` on a developer's own machine exercises the flow without
+// reconfiguring their SSH.
+func (a *Agent) setSSHAccess(w http.ResponseWriter, r *http.Request) {
+	var req protocol.SetSSHAccessRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.User == "" {
+		writeErr(w, http.StatusBadRequest, "bad-request", "user is required")
+		return
+	}
+	if req.Enabled && len(req.AuthorizedKeys) == 0 && !req.RequirePassword {
+		writeErr(w, http.StatusBadRequest, "bad-request",
+			"an enabled account needs at least one key or the password")
+		return
+	}
+
+	if a.SSH == nil {
+		a.mu.Lock()
+		if a.sshAccess == nil {
+			a.sshAccess = map[string]protocol.SSHUserState{}
+		}
+		if req.Enabled {
+			a.sshAccess[req.User] = protocol.SSHUserState{
+				Username:        req.User,
+				KeyCount:        len(req.AuthorizedKeys),
+				RequirePassword: req.RequirePassword,
+			}
+		} else {
+			delete(a.sshAccess, req.User)
+		}
+		a.mu.Unlock()
+		slog.Info("ssh set-access (fake)", "username", req.User, "enabled", req.Enabled,
+			"keys", len(req.AuthorizedKeys), "service", "ssh")
+		writeJSON(w, http.StatusOK, struct{}{})
+		return
+	}
+
+	if err := a.SSH.SetAccess(req); err != nil {
+		slog.Error("ssh set-access failed", "username", req.User, "enabled", req.Enabled,
+			"service", "ssh", "err", err)
+		writeErr(w, http.StatusInternalServerError, "ssh-set-access-failed", "ssh set-access failed")
+		return
+	}
+	slog.Info("ssh set-access", "username", req.User, "enabled", req.Enabled,
+		"keys", len(req.AuthorizedKeys), "service", "ssh")
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// sshState reports actual SSH state for the brain's reconciler: whether the
+// daemon is running, and which accounts the rendered config enables. Read-only.
+//
+// With SSH nil, DaemonRunning is derived from the in-memory map — an honest
+// answer for the fake, where "the daemon" is exactly the set of enabled
+// accounts and nothing else.
+func (a *Agent) sshState(w http.ResponseWriter, r *http.Request) {
+	if a.SSH == nil {
+		a.mu.Lock()
+		users := make([]protocol.SSHUserState, 0, len(a.sshAccess))
+		for _, u := range a.sshAccess {
+			users = append(users, u)
+		}
+		a.mu.Unlock()
+		sort.Slice(users, func(i, j int) bool { return users[i].Username < users[j].Username })
+		writeJSON(w, http.StatusOK, protocol.SSHState{DaemonRunning: len(users) > 0, Users: users})
+		return
+	}
+
+	st, err := a.SSH.State()
+	if err != nil {
+		slog.Error("ssh state read failed", "service", "ssh", "err", err)
+		writeErr(w, http.StatusInternalServerError, "ssh-state-failed", "ssh state read failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // resolveHome returns the user's home directory path, UID, and GID.

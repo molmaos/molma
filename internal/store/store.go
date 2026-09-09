@@ -374,6 +374,21 @@ func (s *Store) migrate() error {
 		CREATE TABLE IF NOT EXISTS used_assertions (
 			jti        TEXT PRIMARY KEY,
 			expires_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS ssh_access (
+			user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			enabled          INTEGER NOT NULL DEFAULT 0,
+			require_password INTEGER NOT NULL DEFAULT 0,
+			updated_at       INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS ssh_keys (
+			id          TEXT PRIMARY KEY,
+			user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			label       TEXT NOT NULL DEFAULT '',
+			public_key  TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			added_at    INTEGER NOT NULL,
+			UNIQUE (user_id, fingerprint)
 		);`)
 	if err != nil {
 		return err

@@ -63,7 +63,13 @@ type harness struct {
 	// the zone reached the host. The sentinel tzFailSentinel makes the mock
 	// return 500 so the brain's host-502 path is reachable.
 	tzCalls *[]string
-	apiSrv  *Server // the underlying api.Server, for direct method tests
+	// sshCalls records every /v1/ssh/set-access request the brain made. Guarded
+	// by pmu. Lets the Device access tests assert what actually reached the host —
+	// the auth methods and the key set — rather than only what the brain stored.
+	// A request for sshFailUser makes the mock answer 500, so the host-502 and
+	// rollback paths are reachable.
+	sshCalls *[]protocol.SetSSHAccessRequest
+	apiSrv   *Server // the underlying api.Server, for direct method tests
 	// catalogDir is the root the harness's catalog reads from. catalog.Load
 	// hits the filesystem on each call, so tests write manifest fixtures into
 	// this dir *after* construction and the live server picks them up — no need
@@ -144,6 +150,20 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 		pmu.Unlock()
 		_ = json.NewEncoder(w).Encode(struct{}{})
 	})
+	sshCalls := []protocol.SetSSHAccessRequest{}
+	mux.HandleFunc("POST /v1/ssh/set-access", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.SetSSHAccessRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.User == sshFailUser {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(protocol.Error{Code: "ssh-set-access-failed", Message: "boom"})
+			return
+		}
+		pmu.Lock()
+		sshCalls = append(sshCalls, req)
+		pmu.Unlock()
+		_ = json.NewEncoder(w).Encode(struct{}{})
+	})
 	deleteCalls := []string{}
 	mux.HandleFunc("POST /v1/auth/delete-user", func(w http.ResponseWriter, r *http.Request) {
 		var req protocol.DeleteUserRequest
@@ -202,7 +222,7 @@ func newHarness(t *testing.T, opts ...func(*Server)) *harness {
 	t.Cleanup(ts.Close)
 
 	jar, _ := newJar()
-	return &harness{srv: ts, jar: jar, t: t, pwds: pwds, pmu: &pmu, st: st, deleteCalls: &deleteCalls, tzCalls: &tzCalls, apiSrv: srv, catalogDir: catDir, stateDir: stateDir}
+	return &harness{srv: ts, jar: jar, t: t, pwds: pwds, pmu: &pmu, st: st, deleteCalls: &deleteCalls, tzCalls: &tzCalls, sshCalls: &sshCalls, apiSrv: srv, catalogDir: catDir, stateDir: stateDir}
 }
 
 func (h *harness) do(method, path string, body any) *http.Response {
