@@ -121,9 +121,35 @@ fmt-check:
 # actually RUNNING them still needs the real system each tag names (TESTING.md).
 VET_TAGS := dockerlive usermgrtest avahitest nmtest pamtest
 
-vet:
-	$(GO) vet ./...
-	@for tag in $(VET_TAGS); do 	  echo "$(GO) vet -tags $$tag ./..."; 	  $(GO) vet -tags $$tag ./... || exit 1; 	done
+# The packages the gate covers: every directory holding a TRACKED .go file.
+#
+# Not `./...`, which walks the working tree and therefore also walks whatever a
+# local build left behind. `dev/cloud/mkosi.tools/` is the real case — it is
+# gitignored, it holds vendored third-party sample code, and `go vet ./...`
+# reports that code and fails. CI never sees it (it is not in the repo), so the
+# local gate went red for something CI is structurally incapable of catching,
+# which is the fastest way to teach people to ignore a gate.
+#
+# `git ls-files` is the same idiom `fmt-check` already uses for exactly this
+# reason. It also keeps covering any package added later, which a hardcoded
+# list of top-level directories would not.
+GOPKGS = $(shell git ls-files '*.go' | xargs -n1 dirname | sort -u | sed 's|^|./|')
+
+# An empty GOPKGS would make `go test` fall back to testing the CURRENT
+# directory and exit 0 — a gate that passes having covered nothing. That is the
+# #375 failure exactly (a guard pointed at a path it never matched, green
+# forever), so it fails loudly instead. It can only happen outside a git
+# checkout, e.g. an unpacked tarball.
+require-gopkgs:
+	@if [ -z "$(GOPKGS)" ]; then \
+	  echo "GOPKGS is empty — no tracked .go files found."; \
+	  echo "This target derives its package list from git; run it inside a git checkout."; \
+	  exit 1; \
+	fi
+
+vet: require-gopkgs
+	$(GO) vet $(GOPKGS)
+	@for tag in $(VET_TAGS); do 	  echo "$(GO) vet -tags $$tag <tracked packages>"; 	  $(GO) vet -tags $$tag $(GOPKGS) || exit 1; 	done
 
 # `build` stays host-agent (fake) + brain, unchanged from before this slice.
 # host-agent-real is deliberately NOT folded in: it's Linux + CGO +
@@ -223,12 +249,12 @@ caddy-acmedns-image:
 # GOTESTFLAGS passes extra flags through to `go test` — CI sets it to -v so
 # skipped tests are visible (a skip prints nothing without it, so a test that
 # never runs reads exactly like one that passed). See .github/workflows/ci-go.yml.
-test:
-	$(GO) test $(GOTESTFLAGS) ./...
+test: require-gopkgs
+	$(GO) test $(GOTESTFLAGS) $(GOPKGS)
 
 # Skip the pamverifier package (no libpam0g-dev required).
-test-nopam:
-	$(GO) test $(GOTESTFLAGS) $$($(GO) list ./... | grep -v pamverifier)
+test-nopam: require-gopkgs
+	$(GO) test $(GOTESTFLAGS) $$($(GO) list $(GOPKGS) | grep -v pamverifier)
 
 # Integration tests for the Avahi DBus publisher. Requires avahi-daemon
 # running on the host. No sudo needed (default DBus policy allows it).
